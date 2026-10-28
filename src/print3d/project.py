@@ -12,6 +12,9 @@ from xml.etree import ElementTree as ET
 
 PLATE_GCODE_RE = re.compile(r"^Metadata/plate_(\d+)\.gcode$")
 TIME_RE = re.compile(r"total estimated time:\s*(.+)$", re.IGNORECASE)
+ORCA_TIME_RE = re.compile(
+    r"estimated printing time \((?:normal|quiet) mode\)\s*=\s*(.+)$", re.IGNORECASE
+)
 FILAMENT_G_RE = re.compile(r"total filament weight \[g\]\s*[:=]\s*([0-9.]+)", re.IGNORECASE)
 FILAMENT_M_RE = re.compile(
     r"total filament length \[mm\]\s*[:=]\s*([0-9., ]+)|filament used \[mm\]\s*[:=]\s*([0-9., ]+)",
@@ -76,6 +79,12 @@ def _parse_gcode_stats(gcode: str) -> dict[str, Any]:
         match = LAYER_RE.search(line)
         if match:
             layers = int(match.group(1))
+    if time is None:
+        # Orca-lineage slicers write the summary line after the gcode, outside
+        # the header comments.
+        match = TIME_RE.search(gcode) or ORCA_TIME_RE.search(gcode)
+        if match:
+            time = match.group(1).strip().rstrip(";")
     return {
         "estimated_time": time,
         "filament_g": filament_g,
@@ -193,3 +202,18 @@ def read_plate_gcode(path: Path, plate: int = 1) -> str:
         if member not in archive.namelist():
             raise ProjectError(f"{path} has no {member}.")
         return archive.read(member).decode("utf-8", "replace")
+
+
+def slice_info_weight_g(path: Path, plate: int = 1) -> float | None:
+    """The plate's filament weight from slice_info, for gcode headers that omit it."""
+    try:
+        with zipfile.ZipFile(path.expanduser().resolve()) as archive:
+            if "Metadata/slice_info.config" not in archive.namelist():
+                return None
+            parsed = _parse_slice_info(archive.read("Metadata/slice_info.config").decode("utf-8", "replace"))
+    except (OSError, zipfile.BadZipFile):
+        return None
+    for plate_info in parsed.get("plates", []):
+        if plate_info.get("index") == plate:
+            return plate_info.get("weight_g")
+    return None
