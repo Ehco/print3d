@@ -46,7 +46,6 @@ ORCA_TIME_RE = re.compile(
 )
 WEIGHT_RE = re.compile(r"total filament weight \[g\]\s*[:=]\s*([0-9.]+)", re.IGNORECASE)
 LAYERS_RE = re.compile(r"total layer number:\s*(\d+)", re.IGNORECASE)
-MOVE_BEFORE_BLOCK_RE = re.compile(r"^G[0-3]\b", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -150,37 +149,45 @@ def analyze_slice(project: Path, plate: int = 1) -> dict[str, Any]:
     # Bambu Studio writes the settings block at the top, ending at
     # CONFIG_BLOCK_END. ElegooSlicer (Orca lineage) writes the same block at
     # the bottom, after the gcode, so the moves and summary lines sit before
-    # CONFIG_BLOCK_START. Whether G-moves precede the block tells the layouts
-    # apart.
-    start_block = gcode.find("CONFIG_BLOCK_START")
-    if start_block == -1 or not MOVE_BEFORE_BLOCK_RE.search(gcode, 0, start_block):
-        header, _, body = gcode.partition("CONFIG_BLOCK_END")
-    else:
-        header = body = gcode[:start_block]
-
+    # CONFIG_BLOCK_START. Either way the block holds only comments, so one
+    # pass over all lines - skipping the block itself - collects both the
+    # summary and the moves without a second scan.
     estimated_time = None
     weight_g = None
     layer_count = None
-    for line in header.splitlines():
-        if estimated_time is None:
-            if match := TIME_RE.search(line):
-                estimated_time = match.group(1).rstrip(";").strip()
-            elif match := ORCA_TIME_RE.search(line):
-                estimated_time = match.group(1).rstrip(";").strip()
-        if match := WEIGHT_RE.search(line):
-            weight_g = float(match.group(1))
-        if match := LAYERS_RE.search(line):
-            layer_count = int(match.group(1))
-
-    # Z-hops and travel moves revisit a height many times, so bin extrusion by Z
-    # rather than starting a layer on every Z change.
     relative_e = True
     current_z = 0.0
     last_e = 0.0
     by_z: dict[float, float] = {}
+    in_block = False
 
-    for line in body.splitlines():
-        stripped = line.strip()
+    for raw in gcode.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        first = stripped[0]
+        if "CONFIG_BLOCK_START" in stripped:
+            in_block = True
+            continue
+        if "CONFIG_BLOCK_END" in stripped:
+            in_block = False
+            continue
+        if in_block:
+            continue
+        if first == ";":
+            if estimated_time is None:
+                match = TIME_RE.search(stripped) or ORCA_TIME_RE.search(stripped)
+                if match:
+                    estimated_time = match.group(1).rstrip(";").strip()
+            if weight_g is None:
+                match = WEIGHT_RE.search(stripped)
+                if match:
+                    weight_g = float(match.group(1))
+            if layer_count is None:
+                match = LAYERS_RE.search(stripped)
+                if match:
+                    layer_count = int(match.group(1))
+            continue
         if stripped.startswith("M83"):
             relative_e = True
             continue

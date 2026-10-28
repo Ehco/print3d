@@ -65,6 +65,6 @@ def test_bambu_layout_still_reads_from_the_top(tmp_path: Path):
     metrics = analyze_slice(project)
     assert metrics["filament_g"] == 3.63
     assert metrics["printed_layers"] == 1
-    # The layer count line sits after the settings block, so the parsed
-    # per-layer z moves stand in for it.
-    assert metrics["layer_count"] == 1
+    # The layer count line sits after the settings block; the single pass
+    # still reads it, so it stands in for nothing.
+    assert metrics["layer_count"] == 100
